@@ -12,7 +12,7 @@ pub use tokio::{
     mpsc::{channel, Receiver, Sender},
     oneshot, Mutex,
   },
-  task::JoinError,
+  task::{JoinHandle, JoinError},
 };
 
 /*

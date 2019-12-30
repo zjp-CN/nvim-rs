@@ -1,15 +1,18 @@
 use std::{
+  self,
   future::Future,
-  io::{self, Error, ErrorKind},
+  io::{Error, ErrorKind},
   path::Path,
   process::Stdio,
-  self,
 };
 
 use crate::{
-  callerror::{LoopError, EnterError},
+  callerror::{EnterError, LoopError},
   neovim::Neovim,
-  runtime::{Child, ChildStdin, Command, Stdout, TcpStream, spawn},
+  runtime::{
+    spawn, AsyncWrite, ChildStdin, Command, JoinHandle, Stdout,
+    TcpStream,
+  },
   Handler,
 };
 
@@ -17,172 +20,135 @@ use crate::{
 use crate::runtime::{stdin, stdout, UnixStream};
 
 /// Connect to nvim instance via tcp
-pub async fn new_tcp<H>(
+pub async fn new_tcp<H, F>(
   host: &str,
   port: u16,
   handler: H,
-) -> io::Result<(
-  Neovim<TcpStream>,
-  impl Future<Output = Result<(), Box<LoopError>>>,
-)>
+  init: impl FnOnce(Neovim<TcpStream>) -> F,
+) -> std::result::Result<(), Box<EnterError>>
 where
-  H: Handler<Writer = TcpStream> + Send + 'static,
+  H: Handler<Writer =TcpStream> + Send + 'static,
+  F: Future<Output = Result<(), Box<EnterError>>>,
 {
-  let stream = TcpStream::connect((host, port)).await?;
-  let read = TcpStream::connect((host, port)).await?;
-  //let read = stream.try_clone()?;
-  let (requester, fut) = Neovim::<TcpStream>::new(stream, read, handler);
+  let stream = TcpStream::connect((host, port)).await.unwrap();
+  let read = TcpStream::connect((host, port)).await.unwrap();
+  let (nvim, io) = Neovim::<TcpStream>::new(stream, read, handler);
 
-  Ok((requester, fut))
+  run(nvim, spawn(io), init).await
 }
 
 #[cfg(unix)]
 /// Connect to nvim instance via unix socket
-pub async fn new_unix_socket<H, P: AsRef<Path> + Clone>(
+pub async fn new_unix_socket<H, F, P: AsRef<Path> + Clone>(
   path: P,
   handler: H,
-) -> io::Result<(
-  Neovim<UnixStream>,
-  impl Future<Output = Result<(), Box<LoopError>>>,
-)>
+  init: impl FnOnce(Neovim<UnixStream>) -> F,
+) -> std::result::Result<(), Box<EnterError>>
 where
   H: Handler<Writer = UnixStream> + Send + 'static,
+  F: Future<Output = Result<(), Box<EnterError>>>,
 {
-  let stream = UnixStream::connect(path.clone()).await?;
-  let read = UnixStream::connect(path).await?;
-  //let read = stream.try_clone()?;
+  let stream = UnixStream::connect(path.clone()).await.unwrap();
+  let read = UnixStream::connect(path).await.unwrap();
 
-  let (requester, fut) = Neovim::<UnixStream>::new(stream, read, handler);
+  let (nvim, io) = Neovim::<UnixStream>::new(stream, read, handler);
 
-  Ok((requester, fut))
-}
-
-/// Connect to a Neovim instance by spawning a new one.
-pub async fn new_child<H>(
-  handler: H,
-) -> io::Result<(
-  Neovim<ChildStdin>,
-  impl Future<Output = Result<(), Box<LoopError>>>,
-  Child,
-)>
-where
-  H: Handler<Writer = ChildStdin> + Send + 'static,
-{
-  if cfg!(target_os = "windows") {
-    new_child_path("nvim.exe", handler).await
-  } else {
-    new_child_path("nvim", handler).await
-  }
-}
-
-/// Connect to a Neovim instance by spawning a new one
-pub async fn new_child_path<H, S: AsRef<Path>>(
-  program: S,
-  handler: H,
-) -> io::Result<(
-  Neovim<ChildStdin>,
-  impl Future<Output = Result<(), Box<LoopError>>>,
-  Child,
-)>
-where
-  H: Handler<Writer = ChildStdin> + Send + 'static,
-{
-  new_child_cmd(Command::new(program.as_ref()).arg("--embed"), handler).await
-}
-
-/// Connect to a Neovim instance by spawning a new one
-///
-/// stdin/stdout settings will be rewrited to `Stdio::piped()`
-pub async fn new_child_cmd<H>(
-  cmd: &mut Command,
-  handler: H,
-) -> io::Result<(
-  Neovim<ChildStdin>,
-  impl Future<Output = Result<(), Box<LoopError>>>,
-  Child,
-)>
-where
-  H: Handler<Writer = ChildStdin> + Send + 'static,
-{
-  let mut child = cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).spawn()?;
-  let stdout = child
-    .stdout()
-    .take()
-    .ok_or_else(|| Error::new(ErrorKind::Other, "Can't open stdout"))?;
-  let stdin = child
-    .stdin()
-    .take()
-    .ok_or_else(|| Error::new(ErrorKind::Other, "Can't open stdin"))?;
-
-  let (requester, fut) = Neovim::<ChildStdin>::new(stdout, stdin, handler);
-
-  Ok((requester, fut, child))
+  run(nvim, spawn(io), init).await
 }
 
 /// Connect to a Neovim instance that spawned this process over stdin/stdout.
-pub fn new_parent<H>(
+pub async fn from_parent<H, F>(
   handler: H,
-) -> io::Result<(
-  Neovim<Stdout>,
-  impl Future<Output = Result<(), Box<LoopError>>>,
-)>
-where
-  H: Handler<Writer = Stdout> + Send + 'static,
-{
-  let (requester, fut) = Neovim::<Stdout>::new(stdin(), stdout(), handler);
-
-  Ok((requester, fut))
-}
-
-pub async fn enter_parent<H, F>(
-  handler: H,
-  plugin: impl FnOnce(Neovim<Stdout>) -> F,
+  init: impl FnOnce(Neovim<Stdout>) -> F,
 ) -> std::result::Result<(), Box<EnterError>>
 where
   H: Handler<Writer = Stdout> + Send + 'static,
-  F: Future<Output=Result<(), Box<LoopError>>>, 
+  F: Future<Output = Result<(), Box<EnterError>>>,
 {
-  let (requester, fut) = Neovim::<Stdout>::new(stdin(), stdout(), handler);
+  let (nvim, io) = Neovim::<Stdout>::new(stdin(), stdout(), handler);
 
-  let io_handle = spawn(fut); 
-  plugin(requester).await?;
-  match io_handle.await { // Result<Result<(), Box<LoopError>>, JoinErr>
-    Ok(Ok(r)) => Ok(r),
-    Ok(Err(e)) => Err(e)?,
-    Err(e) => Err(e)?
-  }
+  run(nvim, spawn(io), init).await
 }
 
-pub async fn enter_child_cmd<H, F>(
-  cmd: &mut Command,
+/// Connect to a Neovim instance by spawning a new one.
+pub async fn run_child<H, F>(
   handler: H,
-  plugin: impl FnOnce(Neovim<ChildStdin>) -> F,
+  init: impl FnOnce(Neovim<ChildStdin>) -> F,
 ) -> std::result::Result<(), Box<EnterError>>
 where
   H: Handler<Writer = ChildStdin> + Send + 'static,
-  F: Future<Output=Result<(), Box<EnterError>>>, 
-  //Neovim<ChildStdin>,
-  //impl Future<Output = Result<(), Box<LoopError>>>,
-  //Child,
+  F: Future<Output = Result<(), Box<EnterError>>>,
 {
-  let mut child =
-    cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();
+  if cfg!(target_os = "windows") {
+    run_child_path("nvim.exe", handler, init).await
+  } else {
+    run_child_path("nvim", handler, init).await
+  }
+}
+
+/// Connect to a Neovim instance by spawning a new one from a given path
+pub async fn run_child_path<H, F, S>(
+  program: S,
+  handler: H,
+  init: impl FnOnce(Neovim<ChildStdin>) -> F,
+) -> std::result::Result<(), Box<EnterError>>
+where
+  H: Handler<Writer = ChildStdin> + Send + 'static,
+  F: Future<Output = Result<(), Box<EnterError>>>,
+  S: AsRef<Path>,
+{
+  run_child_cmd(Command::new(program.as_ref()).arg("--embed"), handler,
+  init).await
+}
+
+/// Connect to a Neovim instance by spawning a new one by running the given
+/// command
+///
+/// stdin/stdout settings will be rewrited to `Stdio::piped()`
+pub async fn run_child_cmd<H, F>(
+  cmd: &mut Command,
+  handler: H,
+  init: impl FnOnce(Neovim<ChildStdin>) -> F,
+) -> std::result::Result<(), Box<EnterError>>
+where
+  H: Handler<Writer = ChildStdin> + Send + 'static,
+  F: Future<Output = Result<(), Box<EnterError>>>,
+{
+  let mut child = cmd
+    .stdin(Stdio::piped())
+    .stdout(Stdio::piped())
+    .spawn()
+    .unwrap();
   let stdout = child
     .stdout()
     .take()
-    .ok_or_else(|| Error::new(ErrorKind::Other, "Can't open stdout")).unwrap();
+    .ok_or_else(|| Error::new(ErrorKind::Other, "Can't open stdout"))
+    .unwrap();
   let stdin = child
     .stdin()
     .take()
-    .ok_or_else(|| Error::new(ErrorKind::Other, "Can't open stdin")).unwrap();
+    .ok_or_else(|| Error::new(ErrorKind::Other, "Can't open stdin"))
+    .unwrap();
 
-  let (requester, fut) = Neovim::<ChildStdin>::new(stdout, stdin, handler);
+  let (nvim, io) = Neovim::<ChildStdin>::new(stdout, stdin, handler);
 
-  let io_handle = spawn(fut); 
-  plugin(requester).await?;
-  match io_handle.await { // Result<Result<(), Box<LoopError>>, JoinErr>
+  run(nvim, spawn(io), init).await
+}
+
+async fn run<W, F>(
+  nvim: Neovim<W>,
+  io_handle: JoinHandle<Result<(), Box<LoopError>>>,
+  init: impl FnOnce(Neovim<W>) -> F,
+) -> std::result::Result<(), Box<EnterError>>
+where
+  W: AsyncWrite + Send + Unpin + 'static,
+  F: Future<Output = Result<(), Box<EnterError>>>,
+{
+  init(nvim).await?;
+  match io_handle.await {
+    // Result<Result<(), Box<LoopError>>, JoinErr>
     Ok(Ok(r)) => Ok(r),
     Ok(Err(e)) => Err(e)?,
-    Err(e) => Err(e)?
+    Err(e) => Err(e)?,
   }
 }

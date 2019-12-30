@@ -2,7 +2,7 @@
 //! src/examples/handler_drop.rs for documentation.
 use nvim_rs::{
   create,
-  runtime::{spawn, ChildStdin, Command},
+  runtime::{ChildStdin, Command},
   Handler, Neovim, Value,
 };
 
@@ -66,32 +66,32 @@ async fn main() {
     buf: Arc::new(Mutex::new(vec![])),
   };
 
-  let (nvim, fut, _child) = create::new_child_cmd(
+  // This will return an error, since we are closing the channel from neovim's
+  // side. Usually, we'd inspect the error to handle this.
+  let _ = create::run_child_cmd(
     Command::new(NVIMPATH)
       .args(&["-u", "NONE", "--embed", "--headless"])
       .env("NVIM_LOG_FILE", "nvimlog"),
     handler,
+    |nvim| {
+      async move {
+        let chan = nvim.get_api_info().await.unwrap()[0].as_i64().unwrap();
+        let close = format!("call chanclose({})", chan);
+
+        let curbuf = nvim.get_current_buf().await.unwrap();
+        if !curbuf.attach(false, vec![]).await.unwrap() {
+          // this is actually an error, but let's not handle it
+          return Ok(());
+        }
+        curbuf
+          .set_lines(0, 0, false, vec!["xyz".into(), "abc".into()])
+          .await
+          .unwrap();
+        // This will return an error, since we're closing the channel.
+        let _ = nvim.command(&close).await;
+        Ok(())
+      }
+    },
   )
-  .await
-  .unwrap();
-
-  // This needs to happen before any request.
-  let io = spawn(fut);
-
-  let chan = nvim.get_api_info().await.unwrap()[0].as_i64().unwrap();
-  let close = format!("call chanclose({})", chan);
-
-  let curbuf = nvim.get_current_buf().await.unwrap();
-  if !curbuf.attach(false, vec![]).await.unwrap() {
-    return;
-  }
-  curbuf
-    .set_lines(0, 0, false, vec!["xyz".into(), "abc".into()])
-    .await
-    .unwrap();
-
-  // The next 2 calls will return an error because the channel is closed, so we
-  // need to explicitely ignore it rather than unwrap it.
-  let _ = nvim.command(&close).await;
-  let _ = io.await;
+  .await;
 }

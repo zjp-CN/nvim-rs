@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use nvim_rs::{create, runtime::spawn, Handler, Neovim};
+use nvim_rs::{create, Handler, Neovim};
 use rmpv::Value;
 use tokio;
 
@@ -231,6 +231,7 @@ impl Handler for NH2 {
     eprintln!("Notification: {}", name);
     match name.as_ref() {
       "not" => eprintln!("Not: {}", args[0].as_str().unwrap()),
+      // TODO: Switch this to just close the channel for quitting
       "quit" => {
         let res: String = req
           .get_var("froodle")
@@ -259,7 +260,7 @@ async fn can_connect_to_child_2() {
 
   let handler = NH2 {};
 
-  let (nvim, fut, _child) = create::new_child_cmd(
+  create::run_child_cmd(
     Command::new(NVIMPATH)
       .args(&[
         "-u",
@@ -277,15 +278,14 @@ async fn can_connect_to_child_2() {
       ])
       .env("NVIM_LOG_FILE", "nvimlog"),
     handler,
+    |nvim| {
+      async move {
+        Ok(nvim.set_var("oogle", Value::from("doodle")).await?)
+      }
+    }
   )
   .await
   .unwrap();
-
-  let nv = nvim.clone();
-
-  spawn(async move { nv.set_var("oogle", Value::from("doodle")).await });
-
-  fut.await.unwrap();
 
   eprintln!("Quitting");
 }

@@ -19,13 +19,14 @@
 //! Follow the
 //! [steps](https://github.com/boxofrox/neovim-scorched-earth#try-it-out)
 //! described for the original plugin. Of course, you don't need to build it.
-//! Before step 4, put
+//! Before step 4, edit autoload/scorchedEarth.vim and change `s:bin` to point
+//! to the example's binary, e.g.
 //!
 //! ```viml
-//! let g:scorched_earth_program = '<path to nvim-rs>/target/debug/examples/scorched_earth'
+//! let s:bin = s:scriptdir . '/../nvim-rs/target/debug/examples/scorched_earth'
 //! ```
 //!
-//! into `init.vim`. That's it, fire it up and enjoy.
+//! That's it, fire it up and enjoy.
 //!
 //! ## Description
 //!

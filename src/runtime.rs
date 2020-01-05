@@ -19,5 +19,4 @@ pub use tokio::{
   task::JoinHandle,
 };
 
-#[cfg(unix)]
 pub use tokio::net::UnixStream;

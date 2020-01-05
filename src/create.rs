@@ -20,10 +20,11 @@ use crate::{
   Handler,
 };
 
-#[cfg(unix)]
+use tokio;
+use tokio::io::WriteHalf;
+
 use crate::runtime::UnixStream;
-#[cfg(unix)]
-use std::os::unix::net::UnixStream as StdUnixStream;
+//use std::os::unix::net::UnixStream as StdUnixStream;
 
 /// Connect to a neovim instance via tcp
 pub async fn new_tcp<A, H>(
@@ -46,22 +47,22 @@ where
   Ok((neovim, io_handle))
 }
 
-#[cfg(unix)]
 /// Connect to a neovim instance via unix socket
 pub async fn new_unix_socket<H, P: AsRef<Path> + Clone>(
   path: P,
   handler: H,
-) -> io::Result<(Neovim<UnixStream>, JoinHandle<Result<(), Box<LoopError>>>)>
+) -> io::Result<(Neovim<WriteHalf<UnixStream>>, JoinHandle<Result<(), Box<LoopError>>>)>
 where
-  H: Handler<Writer = UnixStream> + Send + 'static,
+  H: Handler<Writer = WriteHalf<UnixStream>> + Send + 'static,
 {
-  let stdstream_r = StdUnixStream::connect(path)?;
-  let stdstream_w = stdstream_r.try_clone()?;
+  let stdstream = UnixStream::connect(path).await?;
+  //let stdstream_w = stdstream_r.try_clone()?;
 
-  let reader = UnixStream::from_std(stdstream_r)?;
-  let writer = UnixStream::from_std(stdstream_w)?;
+  //let reader = UnixStream::from_std(stdstream_r)?;
+  //let writer = UnixStream::from_std(stdstream_w)?;
+  let (reader, writer) = tokio::io::split(stdstream);
 
-  let (neovim, io) = Neovim::<UnixStream>::new(reader, writer, handler);
+  let (neovim, io) = Neovim::<WriteHalf<UnixStream>>::new(reader, writer, handler);
   let io_handle = spawn(io);
 
   Ok((neovim, io_handle))

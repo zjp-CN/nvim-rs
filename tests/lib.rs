@@ -10,13 +10,11 @@ use std::{
 use std::process::{Command, Stdio};
 use std::fs;
 
-#[cfg(unix)]
 use std::path::Path;
-#[cfg(unix)]
 use tempdir::TempDir;
 
 const NVIMPATH: &str = "neovim/build/bin/nvim";
-const HOST: &str = "0.0.0.0";
+const HOST: &str = "127.0.0.1";
 const PORT: u16 = 6666;
 
 #[test]
@@ -68,7 +66,6 @@ fn can_connect_via_tcp() {
   assert_eq!(&listen, servername.as_str().unwrap());
 }
 
-#[cfg(unix)]
 #[tokio::test]
 async fn can_connect_via_unix_socket() {
   let dir = TempDir::new("neovim-lib.test")

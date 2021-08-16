@@ -12,11 +12,12 @@ use futures::{
     mpsc::{unbounded, UnboundedReceiver, UnboundedSender},
     oneshot,
   },
+  future,
   io::{AsyncRead, AsyncWrite, BufWriter},
   lock::Mutex,
   sink::SinkExt,
   stream::StreamExt,
-  future, TryFutureExt,
+  TryFutureExt,
 };
 
 use crate::{
@@ -30,6 +31,8 @@ use crate::{
   uioptions::UiAttachOptions,
 };
 use rmpv::Value;
+
+use log::{error, trace};
 
 /// Pack the given arguments into a `Vec<Value>`, suitable for using it for a
 /// [`call`](crate::neovim::Neovim::call) to neovim.
@@ -109,7 +112,7 @@ where
     let (sender, receiver) = unbounded();
     let fut = future::try_join(
       req.clone().io_loop(reader, sender),
-      req.clone().handler_loop(handler, receiver)
+      req.clone().handler_loop(handler, receiver),
     )
     .map_ok(|_| ());
 
@@ -202,8 +205,8 @@ where
       let msg = match receiver.next().await {
         Some(msg) => msg,
         /* If our receiver closes, that just means that io_handler started
-         * shutting down. This is normal, so shut down along with it and don't
-         * report an error
+         * shutting down. This is normal, so shut down along with it and
+         * don't report an error
          */
         None => break Ok(()),
       };
@@ -218,11 +221,10 @@ where
           let neovim = self.clone();
           let writer = self.writer.clone();
 
+          trace!("Spawning off request with id '{}'", msgid);
           handler.spawn(async move {
-            let response = match handler_c
-              .handle_request(method, params, neovim)
-              .await
-              {
+            let response =
+              match handler_c.handle_request(method, params, neovim).await {
                 Ok(result) => RpcMessage::RpcResponse {
                   msgid,
                   result,
@@ -235,17 +237,25 @@ where
                 },
               };
 
-            model::encode(writer, response)
-              .await
-              .unwrap_or_else(|e| {
-                error!("Error sending response to request {}: '{}'", msgid, e);
-              });
+            model::encode(writer, response).await.unwrap_or_else(|e| {
+              error!("Error sending response to request {}: '{}'", msgid, e);
+            });
           });
-        },
-        RpcMessage::RpcNotification {
-          method,
-          params
-        } => handler.handle_notify(method, params, self.clone()).await,
+        }
+        RpcMessage::RpcNotification { method, params } => {
+          trace!(
+            "Starting to handle notification '{}' (Params: '{:?}')",
+            method,
+            params
+          );
+          let ret = handler.handle_notify(method.clone(), params.clone(), self.clone()).await;
+          trace!(
+            "Finished handling notification '{}' (Params: '{:?}')",
+            method,
+            params
+          );
+          ret
+        }
         _ => unreachable!(),
       }
     }
@@ -270,8 +280,13 @@ where
         }
       };
 
-      debug!("Get message {:?}", msg);
-      if let RpcMessage::RpcResponse { msgid, result, error, } = msg {
+      debug!("Got message {:?}", msg);
+      if let RpcMessage::RpcResponse {
+        msgid,
+        result,
+        error,
+      } = msg
+      {
         let sender = find_sender(&self.queue, msgid).await?;
         if error == Value::Nil {
           sender

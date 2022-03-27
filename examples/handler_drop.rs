@@ -1,5 +1,6 @@
 //! How to handle cleanup logic with access to the handler's data. See
 //! src/examples/handler_drop.rs for documentation.
+#![allow(unused)]
 use nvim_rs::{
   compat::tokio::Compat, create::tokio as create, Handler, Neovim, Value,
 };
@@ -16,7 +17,7 @@ use std::{
 };
 
 const OUTPUT_FILE: &str = "handler_drop.txt";
-const NVIMPATH: &str = "neovim/build/bin/nvim";
+const NVIMPATH: &str = "/usr/bin/nvim";
 
 #[derive(Clone)]
 struct NeovimHandler {
@@ -33,7 +34,7 @@ impl Handler for NeovimHandler {
     args: Vec<Value>,
     _req: Neovim<Compat<ChildStdin>>,
   ) {
-    match name.as_ref() {
+    match dbg!(name.as_ref()) {
       "nvim_buf_lines_event" => {
         // This can be made more efficient by taking ownership appropriately,
         // but we skip this in this example
@@ -55,7 +56,7 @@ impl Drop for NeovimHandler {
   fn drop(&mut self) {
     let mut file = File::create(OUTPUT_FILE).unwrap();
 
-    for line in self.buf.lock().unwrap().iter() {
+    for line in dbg!(&self.buf.lock().unwrap()).iter() {
       writeln!(file, "{}", line).unwrap();
     }
   }
@@ -67,7 +68,7 @@ async fn main() {
     buf: Arc::new(Mutex::new(vec![])),
   };
 
-  let (nvim, io_handle, _child) = create::new_child_cmd(
+  let (nvim, io_handle, child) = create::new_child_cmd(
     Command::new(NVIMPATH)
       .args(&["-u", "NONE", "--embed", "--headless"])
       .env("NVIM_LOG_FILE", "nvimlog"),
@@ -77,7 +78,6 @@ async fn main() {
   .unwrap();
 
   let chan = nvim.get_api_info().await.unwrap()[0].as_i64().unwrap();
-  let close = format!("call chanclose({})", chan);
 
   let curbuf = nvim.get_current_buf().await.unwrap();
   if !curbuf.attach(false, vec![]).await.unwrap() {
@@ -88,8 +88,12 @@ async fn main() {
     .await
     .unwrap();
 
-  // The next 2 calls will return an error because the channel is closed, so we
-  // need to explicitely ignore it rather than unwrap it.
-  let _ = nvim.command(&close).await;
-  let _ = io_handle.await;
+  // Add some command calls
+  // let _ = dbg!(nvim.command(&format!("echo \"hi {}\"", chan)).await);
+  // let _ = dbg!(nvim.command("w! hi.txt").await);
+
+  // Original
+  let close = format!("call chanclose({})", chan);
+  let _ = dbg!(nvim.command(&close).await);
+  let _ = dbg!(io_handle.await);
 }

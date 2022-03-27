@@ -32,7 +32,7 @@ impl Handler for NeovimHandler {
     &self,
     name: String,
     args: Vec<Value>,
-    _req: Neovim<Compat<ChildStdin>>,
+    req: Neovim<Compat<ChildStdin>>,
   ) {
     match dbg!(name.as_ref()) {
       "nvim_buf_lines_event" => {
@@ -46,6 +46,11 @@ impl Handler for NeovimHandler {
         {
           self.buf.lock().unwrap().push(s.to_owned());
         }
+        // shut down after the first event
+        let chan = req.get_api_info().await.unwrap()[0].as_i64().unwrap();
+        let close = format!("call chanclose({})", chan);
+        // this will always return an EOF error, so let's just ignore that here
+        let _ = req.command(&close).await;
       }
       _ => {}
     }
@@ -77,8 +82,6 @@ async fn main() {
   .await
   .unwrap();
 
-  let chan = nvim.get_api_info().await.unwrap()[0].as_i64().unwrap();
-
   let curbuf = nvim.get_current_buf().await.unwrap();
   if !curbuf.attach(false, vec![]).await.unwrap() {
     return;
@@ -88,12 +91,7 @@ async fn main() {
     .await
     .unwrap();
 
-  // Add some command calls
-  // let _ = dbg!(nvim.command(&format!("echo \"hi {}\"", chan)).await);
-  // let _ = dbg!(nvim.command("w! hi.txt").await);
-
-  // Original
-  let close = format!("call chanclose({})", chan);
-  let _ = dbg!(nvim.command(&close).await);
-  let _ = dbg!(io_handle.await);
+  // The call will return an error because the channel is closed, so we
+  // need to explicitely ignore it rather than unwrap it.
+  let _ = io_handle.await;
 }

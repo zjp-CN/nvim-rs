@@ -32,4 +32,3 @@ jobs:
           publish_dir: ./doc
           force_orphan: true
           commit_message: ${{ github.event.head_commit.message  }}
-
